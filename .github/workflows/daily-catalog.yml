@@ -1,0 +1,47 @@
+name: Curio daily catalog
+on:
+  schedule:
+    - cron: '17 11 * * *' # 08:17 Buenos Aires; GitHub may delay scheduled jobs.
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: curio-catalog-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: python3 -m unittest test_import_daily.py
+      - name: Validate reviewed queue
+        run: python3 -c "import json; from import_daily import validate; validate(json.load(open('catalog/queue.json')))"
+  import:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      SUPABASE_URL: https://jyyrbqopbftwbrhmazis.supabase.co
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      DAILY_LIMIT: '3'
+      CATALOG_CAP: '1000'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check configuration
+        id: config
+        shell: bash
+        run: |
+          if [ -z "$SUPABASE_SECRET_KEY" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Import pending: add the SUPABASE_SECRET_KEY repository secret." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Add reviewed videos within limits
+        if: steps.config.outputs.ready == 'true'
+        run: python3 import_daily.py
